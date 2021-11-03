@@ -1,5 +1,6 @@
 package com.craftinginterpreters.lox;
 
+import java.util.ArrayList;
 import java.util.List;
 import static com.craftinginterpreters.lox.TokenType.*;
 
@@ -32,7 +33,9 @@ public class Parser {
 // Highest Precedence //    primary
 
 /******* Complete expression grammar ********************************/
-//    expression     → equality ;
+//     expression     → assignment ;
+//    assignment     → IDENTIFIER "=" assignment
+//               | equality ;
 //    equality       → comparison ( ( "!=" | "==" ) comparison )* ;
 //    comparison     → term ( ( ">" | ">=" | "<" | "<=" ) term )* ;
 //    term           → factor ( ( "-" | "+" ) factor )* ;
@@ -40,7 +43,7 @@ public class Parser {
 //    unary          → ( "!" | "-" ) unary
 //                     | primary ;
 //    primary        → NUMBER | STRING | "true" | "false" | "nil"
-//            | "(" expression ")" ;
+//            | "(" expression ")" | IDENTIFIER ;
 /*  ******************************************************************/
 
 /*    unary can match to unary and primary
@@ -51,26 +54,128 @@ public class Parser {
     expression can match to expression, equality, comparison, term all the way down to primary
             i.e effectively expression matches to equality and equality covers the rest*/
 
+/********** Statement Grammar **********/
+//    statement      → exprStmt
+//               | printStmt
+//               | block ;
+//
+//    block          → "{" declaration* "}" ;
+/*****************************************/
+
 
     private static class ParseError extends RuntimeException{}
     private final List<Token> tokens;
-    private static int current = 0;
+    private int current = 0;
 
     public Parser(List<Token> tokens) {
         this.tokens = tokens;
     }
 
-    Expr parse(){
-        try{
-            return expression();
+//    Expr parse(){
+//        try{
+//            return expression();
+//        }
+//        catch(ParseError error){
+//            return null;
+//        }
+//    }
+
+    List<Stmt> parse(){
+        List<Stmt> statements = new ArrayList<>();
+        while(!isAtEnd()){
+            statements.add(declaration());
         }
-        catch(ParseError error){
+        return statements;
+    }
+
+    private Stmt declaration(){
+        try{
+            if(match(VAR)){
+                return varDeclaration();
+            }
+            return statement();
+        } catch(ParseError error){
+            synchronize();
             return null;
         }
+    } 
+
+    private Stmt varDeclaration(){
+        Token name = consume(IDENTIFIER, "Expect variable name.");
+        Expr initializer = null;
+        if(match(EQUAL)){
+            // for case like var myVar = 2*3+4;
+            initializer = expression(); //here the expression 2*3+4
+        }
+        consume(SEMICOLON, "Expected ';' after variable declaration.");
+        return new Stmt.Var(name, initializer);
+    }
+
+
+    private Stmt statement(){
+        if(match(IF)) return ifStatement();
+        if(match(PRINT)) return printStatement();
+        if(match(LEFT_BRACE)) return new Stmt.Block(block());
+        return expressionStatement();
+    }
+
+    private Stmt expressionStatement() {
+        Expr expr = expression();
+        consume(SEMICOLON, "Expected ; after expression.");
+        return new Stmt.Expression(expr);
+    }
+
+    private Stmt printStatement() {
+        Expr value = expression();
+        consume(SEMICOLON, "Expected ; after value.");
+        return new Stmt.Print(value);
+    }
+
+    private Stmt ifStatement(){
+        consume(LEFT_PAREN, "Expect '(' after 'if'.");
+        Expr condition = expression();
+        consume(RIGHT_PAREN, "Expect ')' after if condition.");
+
+        Stmt thenBranch = statement();
+        Stmt elseBranch = null;
+        if(match(ELSE)){
+            elseBranch = statement();
+        }
+
+        return new Stmt.If(condition, thenBranch, elseBranch);
+    }
+
+    private List<Stmt> block(){
+        List<Stmt> statements = new ArrayList<>();
+        while(!check(RIGHT_BRACE) && !isAtEnd()){
+            statements.add(declaration());
+        }
+        consume(RIGHT_BRACE, "Expect '}' after block.");
+        return statements;
     }
 
     private Expr expression(){
-        return equality();
+//        expression     → assignment ;
+        return assignment();
+    }
+
+    private Expr assignment(){
+//    assignment  → IDENTIFIER "=" assignment
+//               | equality ;
+        Expr expr = equality();
+
+        if(match(EQUAL)){
+            Token equals = previous();
+            Expr value = assignment();
+
+            if (expr instanceof Expr.Variable){
+                Token name = ((Expr.Variable) expr).name;
+                return new Expr.Assign(name, value);
+            }
+
+            error(equals, "Invalid assignment target.");
+        }
+        return expr;
     }
 
     private Expr equality(){
@@ -131,7 +236,7 @@ public class Parser {
 
     private Expr primary(){
 //        primary        → NUMBER | STRING | "true" | "false" | "nil"
-//            | "(" expression ")" ;
+//            | "(" expression ")" | IDENTIFIER ;
         if(match(FALSE)) return new Expr.Literal(false);
         if(match(TRUE)) return new Expr.Literal(true);
         if(match(NIL)) return new Expr.Literal(null);
@@ -145,10 +250,15 @@ public class Parser {
             consume(RIGHT_PAREN, "Except ')' after expression.");
             return new Expr.Grouping(expr);
         }
+
+        if (match(IDENTIFIER)){
+            return new Expr.Variable(previous()); //previous() because if match() is true, current advances by 1
+        }
         throw error(peek(), "Expect expression.");
     }
 
     private Token consume(TokenType type, String message){
+        //TODO(Question): Will consume block code execution if the type doesn't match? ... since advance() won't get called.
         if(check(type)) return advance();
         throw error(peek(), message);
     }
@@ -159,6 +269,8 @@ public class Parser {
     }
 
     private void synchronize(){
+        // when you know, there's a mistake in the current line, you just keep advancing all the way to the ';'
+        // , ignoring everything else in that line.
         advance();
         while(!isAtEnd()){
             if(previous().type == SEMICOLON) return;
