@@ -1,10 +1,35 @@
 package com.craftinginterpreters.lox;
 
 import java.util.List;
+import java.util.ArrayList;
 
 public class Interpreter implements Expr.Visitor<Object>, Stmt.Visitor<Void>{
 
-    private Environment environment = new Environment();
+    // environment field changes as we enter and exit scopes. It tracks the current environment.
+    // globals holds a fixed reference to the outermost global environment.
+    final Environment globals = new Environment();
+    private Environment environment = globals;
+
+    Interpreter(){
+        // we provide user with a clock() function that they can use, when writing lox code.
+        globals.define("clock", new LoxCallable() {
+            @Override
+            public Object call(Interpreter interpreter, List<Object> arguments) {
+                return (double) System.currentTimeMillis()/1000.0;
+            }
+
+            @Override
+            public int arity() {
+                return 0;
+            }
+
+            @Override
+            public String toString(){
+                // TODO: Figure out the use of this function?
+                return "<native fn>";
+            }
+        });
+    }
 
     @Override
     public Object visitLiteralExpr(Expr.Literal expr){
@@ -101,11 +126,59 @@ public class Interpreter implements Expr.Visitor<Object>, Stmt.Visitor<Void>{
         return value;
     }
 
+
+    @Override
+    public Object visitLogicalExpr(Expr.Logical expr){
+        Object left = evaluate(expr.left);
+
+        if(expr.operator.type == TokenType.OR){
+            if(isTruthy(left)) return left;
+        } else {
+            if (!isTruthy(left)) return left;
+        }
+        return evaluate(expr.right);
+    }
+
+    @Override
+    public Object visitCallExpr(Expr.Call expr){
+//        First, we evaluate the expression for the callee.
+//        Typically, this expression is just an identifier that looks up the function by its name, but it could be anything.
+//        Then we evaluate each of the argument expressions in order and store the resulting values in a list.
+        Object callee = evaluate(expr.callee);
+
+        List<Object> arguments = new ArrayList<>();
+        for(Expr argument : expr.arguments){
+            arguments.add(evaluate(argument));
+        }
+
+        if(!(callee instanceof LoxCallable)){
+            // this takes care of bad-calls like "totally not a function"();
+            throw new RuntimeError(expr.paren, "Can only call functions and classes.");
+        }
+
+        LoxCallable function = (LoxCallable)callee;
+        if(arguments.size() != function.arity()){
+            throw new RuntimeError(expr.paren, "Expected "+
+                    function.arity() + "arguments, but got " +
+                    arguments.size() + ".");
+        }
+        return function.call(this, arguments);
+    }
+
     @Override
     public Void visitExpressionStmt(Stmt.Expression stmt){
         evaluate(stmt.expression); //TODO: What is the point of this line, where is the evaluated expression being used?
         return null;
     }
+
+    @Override
+    public Void visitWhileStmt(Stmt.While stmt){
+        while(isTruthy(evaluate(stmt.condition))){
+            execute(stmt.body);
+        }
+        return null;
+    }
+
 
     @Override
     public Void visitIfStmt(Stmt.If stmt){
@@ -140,6 +213,11 @@ public class Interpreter implements Expr.Visitor<Object>, Stmt.Visitor<Void>{
         return null;
     }
 
+    @Override
+    public Void visitFunctionStmt(Stmt.Function stmt){
+        //TODO: Incomplete
+        return null;
+    }
     private Object evaluate(Expr expr){
         //TODO(Rijubak): Won't this recurse infinitely? Ans: NO, every GroupingExpr has a field named `Expr expression`, which could be
 //        TODO(Cont.) Binary, Unary or Literal.

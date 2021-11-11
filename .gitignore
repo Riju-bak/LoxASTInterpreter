@@ -2,3 +2,5 @@
 in
 *.png
 out
+src/com/craftinginterpreters/lox/AstPrinter.java
+src/com/craftinginterpreters/tool/

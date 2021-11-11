@@ -1,6 +1,7 @@
 package com.craftinginterpreters.lox;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import static com.craftinginterpreters.lox.TokenType.*;
 
@@ -35,16 +36,27 @@ public class Parser {
 /******* Complete expression grammar ********************************/
 //     expression     → assignment ;
 //    assignment     → IDENTIFIER "=" assignment
-//               | equality ;
+//               | logic_or ;
+//    logic_or       → logic_and ( "or" logic_and )* ;
+//    logic_and      → equality ( "and" equality )* ;
 //    equality       → comparison ( ( "!=" | "==" ) comparison )* ;
 //    comparison     → term ( ( ">" | ">=" | "<" | "<=" ) term )* ;
 //    term           → factor ( ( "-" | "+" ) factor )* ;
 //    factor         → unary ( ( "/" | "*" ) unary )* ;
 //    unary          → ( "!" | "-" ) unary
-//                     | primary ;
+//                     | call ;
+//    call           -> primary("(" arguments? ")")*;
 //    primary        → NUMBER | STRING | "true" | "false" | "nil"
 //            | "(" expression ")" | IDENTIFIER ;
 /*  ******************************************************************/
+
+
+/************Utility Rule (Not complete) *******************/
+//    arguments -> expression("," expression)*;
+
+/**********************************************************/
+
+
 
 /*    unary can match to unary and primary
     factor can match to factor and unary(covers primary as well)
@@ -54,12 +66,24 @@ public class Parser {
     expression can match to expression, equality, comparison, term all the way down to primary
             i.e effectively expression matches to equality and equality covers the rest*/
 
-/********** Statement Grammar **********/
+/********** Statement Grammar (Not complete) **********/
+
+//    block          → "{" declaration* "}" ;
+
+//    declaration  → funDecl
+//               | varDecl
+//               | statement ;
+
+//funcDel -> "fun" function;
+//function -> IDENTIFIER "(" parameters? ")" block;
+
+//    parameters     → IDENTIFIER ( "," IDENTIFIER )* ;
+
 //    statement      → exprStmt
 //               | printStmt
 //               | block ;
 //
-//    block          → "{" declaration* "}" ;
+
 /*****************************************/
 
 
@@ -90,6 +114,9 @@ public class Parser {
 
     private Stmt declaration(){
         try{
+            if(match(FUN)) {
+                return function("function");
+            }
             if(match(VAR)){
                 return varDeclaration();
             }
@@ -99,6 +126,26 @@ public class Parser {
             return null;
         }
     } 
+
+    private Stmt function(String kind){
+//        kind can be "function" or "method"
+        Token name = consume(IDENTIFIER, "Expect " + kind + "name.");
+
+        consume(LEFT_PAREN, "Expect '(' after " + kind + "name." );
+        List<Token> parameters = new ArrayList<>();
+        if(!check(RIGHT_PAREN)){
+            do{
+                if(parameters.size() >= 255){
+                    error(peek(), "Can't have more than 255 parameters.");
+                }
+                parameters.add(consume(IDENTIFIER, "Expect parameter name."));
+            } while(match(COMMA));
+        }
+        consume(RIGHT_PAREN, "Expect ')' after parameters.");
+        consume(LEFT_BRACE, "Expect '{' before "+ kind + " body.");
+        List<Stmt> body = block();
+        return new Stmt.Function(name, parameters, body);
+    }
 
     private Stmt varDeclaration(){
         Token name = consume(IDENTIFIER, "Expect variable name.");
@@ -113,8 +160,10 @@ public class Parser {
 
 
     private Stmt statement(){
+        if(match(FOR)) return forStatement();
         if(match(IF)) return ifStatement();
         if(match(PRINT)) return printStatement();
+        if(match(WHILE)) return whileStatement();
         if(match(LEFT_BRACE)) return new Stmt.Block(block());
         return expressionStatement();
     }
@@ -145,6 +194,60 @@ public class Parser {
         return new Stmt.If(condition, thenBranch, elseBranch);
     }
 
+    private Stmt whileStatement(){
+        consume(LEFT_PAREN, "Expected '(' after while.");
+        Expr condition = expression();
+        consume(RIGHT_PAREN, "Expect ')' after condition.");
+        Stmt body = statement();
+        return new Stmt.While(condition, body);
+    }
+
+    private Stmt forStatement(){
+        // NOTE: We don't have a visitForStmt in interpreter.java , because the for statement will be parsed
+        // into a while statement form in the AST.
+        consume(LEFT_PAREN, "Expect '(' after 'for'.");
+
+        Stmt initializer;
+        if(match(SEMICOLON)){
+            initializer = null;
+        } else if(match(VAR)){
+            initializer = varDeclaration();
+        } else {
+            initializer = expressionStatement();
+        }
+
+        Expr condition = null;
+        if(!check(SEMICOLON)){
+            condition = expression();
+        }
+        consume(SEMICOLON, "Expect ';' after loop condition.");
+
+        Expr increment = null;
+        if(!check(RIGHT_PAREN)){
+            increment = expression();
+        }
+        consume(RIGHT_PAREN, "Expect ')' after for clauses.");
+
+/***********************************************/
+        Stmt body = statement();
+        if(increment != null){
+            body = new Stmt.Block(
+                    Arrays.asList(body, new Stmt.Expression(increment))
+            );
+        }
+
+        if(condition == null) condition = new Expr.Literal(true);
+        body = new Stmt.While(condition, body);
+
+        if(initializer != null){
+            body = new Stmt.Block(Arrays.asList(initializer, body));
+        }
+
+/*********************************************/
+        return body;
+    }
+
+
     private List<Stmt> block(){
         List<Stmt> statements = new ArrayList<>();
         while(!check(RIGHT_BRACE) && !isAtEnd()){
@@ -160,9 +263,9 @@ public class Parser {
     }
 
     private Expr assignment(){
-//    assignment  → IDENTIFIER "=" assignment
-//               | equality ;
-        Expr expr = equality();
+// assignment     → IDENTIFIER "=" assignment
+//                | logic_or ;
+        Expr expr = or();
 
         if(match(EQUAL)){
             Token equals = previous();
@@ -174,6 +277,28 @@ public class Parser {
             }
 
             error(equals, "Invalid assignment target.");
+        }
+        return expr;
+    }
+
+    private Expr or(){
+        Expr expr = and();
+
+        while(match(OR)){
+            Token operator = previous();
+            Expr right = and();
+            expr = new Expr.Logical(expr, operator, right);
+        }
+        return expr;
+    }
+
+    private Expr and(){
+        Expr expr = equality();
+
+        while(match(AND)){
+            Token operator = previous();
+            Expr right = equality();
+            expr = new Expr.Logical(expr, operator, right);
         }
         return expr;
     }
@@ -231,8 +356,44 @@ public class Parser {
             Expr right = unary();
             return new Expr.Unary(operator, right);
         }
-        return primary();
+        return call();
     }
+
+    private Expr call(){
+//        First, we parse a primary expression, the “left operand” to the call.
+//        Then, each time we see a (, we call finishCall() to parse the call expression
+//        using the previously parsed expression as the callee.
+//        The returned expression becomes the new expr and we loop to see if the result is itself called.
+
+        Expr expr = primary();
+        while(true){
+            if(match(LEFT_PAREN)){
+                expr = finishCall(expr);
+            }else{
+                break;
+            }
+        }
+        return expr;
+    }
+
+
+    private Expr finishCall(Expr callee){
+//    This is more or less the arguments grammar rule translated to code, except that we also handle the zero-argument case.
+//    We check for that case first by seeing if the next token is ). If it is, we don’t try to parse any arguments.
+        List<Expr> arguments = new ArrayList<>();
+        if(!check(RIGHT_PAREN)){
+            do{
+                if(arguments.size() > 255){
+                    // This part is just for compatibility with the byte-code VM version.
+                    error(peek(), "Can't have more than 255 arguments.");
+                }
+                arguments.add(expression());
+            } while(match(COMMA));
+        }
+        Token param = consume(RIGHT_PAREN, "Expect ')' after arguments.");
+        return new Expr.Call(callee, param, arguments);
+    }
+
 
     private Expr primary(){
 //        primary        → NUMBER | STRING | "true" | "false" | "nil"
